@@ -1,0 +1,65 @@
+var c = adcanvas.init(ad, ad.tensor.__Tensor)
+
+var empty = c.create(5, 5, 0)
+var obs = c.drawLine(empty, 2, 2, 3, 3, 1);
+
+var x1 = ad.lift(1.9)
+var y1 =ad.lift(2.1);
+var x2 = ad.lift(3.1)
+var y2 =ad.lift(2.9);
+
+// var t = c.drawLine(empty, x1, y1, x2, y2)
+var t = c.drawLine(empty, x1, y1, x2, y2, 1)
+// console.log(ad.value(t))
+c.saveImage(obs, "obs.bmp")
+c.saveImage(t, "inferred.bmp")
+
+var diff = ad.tensor.sub(t, obs)
+var cost = ad.tensor.sumreduce(ad.tensor.mul(diff, diff))
+
+cost.backprop()
+console.log(x1, y1, x2, y2)
+
+// console.log(ad.scalar.mul(y2, 2))
+// console.log(t)
+
+// conso
+// console.log("-----------------------------")
+// console.log(t)
+
+// console.log("---------now backprop--------")
+// t.computeOutDegree()
+// t.backward()
+// console.log(t.backward)
+// // t.backprop()
+// console.log("-----------------------------")
+// console.log(t)
+// console.log(cost)
+// console.log(x1)
+
+// console.log("---------")
+// console.log(x1)
+// console.log(y1)
+// console.log(x2)
+// console.log(y2)
+
+
+
+
+
+// var t2 = c.drawLine(t, midx, midy, 19., 0.)
+// c.saveImage(t2, "bar.bmp")
+
+
+
+
+// console.log("t2:", t2)
+
+// console.log(ad.value(final))
+// console.log("t:", t)
+// var p = ad.tensor.sumreduce(t)
+
+// p.backprop()
+// console.log("dp/dv:", ad.derivative(val))
+
+'done'

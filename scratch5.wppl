@@ -1,0 +1,265 @@
+var saveDir = "omniglot_out"
+
+
+var linewidth = 1.3
+var nPrimitives = 2;
+var pointsPerPrimitive = 3;
+
+var c = adcanvas.init(ad, ad.tensor.__Tensor, nn)
+var empty = c.fill(32, 32, 0)
+var kernel = c.powKernel(5, -18); //First arg must be odd
+var blurred = function(x) {
+  return c.convolve(x, kernel)
+}
+var pam = function(a, f) {
+  return map(f, a);
+}
+var sqdiff = function(x, y) {
+  var diff = ad.tensor.sub(x.t, y.t)
+  return ad.tensor.sumreduce(ad.tensor.mul(diff, diff))
+}
+var getScore = function(render, obs) {
+  return ad.scalar.add(
+    ad.scalar.mul(sqdiff(render, obs), -10),
+    ad.scalar.mul(sqdiff(blurred(render), blurred(obs)), -10))
+}
+
+var eval_seq = function(seq, input, i) {
+  if(i >= seq.length) {
+    return input
+  } else if(i==undefined) {
+    return eval_seq(seq, daipp.nneval(seq[0], input), 1)
+  } else {
+    return eval_seq(seq, daipp.nneval(seq[i], input), i+1)
+  }
+}
+
+
+
+
+
+//----------------------
+
+  var shrinkNet = [
+    nn.maxpool({filterSize: 4})
+  ]
+  shrinkNet[0].setTraining(true)
+
+  var contNet = [
+    nn.linear(8*8, 1)
+  ]
+  contNet[0].setTraining(true)
+
+  var locNet = [
+    nn.linear(8*8, 2)
+  ]
+  locNet[0].setTraining(true)
+
+  var primitiveNet = [
+    nn.linear(8*8, nPrimitives)
+  ]
+  primitiveNet[0].setTraining(true)
+
+  var glimpseNet = [
+    nn.linear(8*8, 4)
+  ]
+  glimpseNet[0].setTraining(true)
+//----------------------
+
+var samplePrimitives = function() {
+  var samplePrimitive = function() {
+    var nextPoint = function(from) {
+      return {mu: {
+                x: from.x + sample(Gaussian({mu:0, sigma:0.1}), {guide: Gaussian({mu:scalarParam(0, 0.1), sigma:ad.scalar.sigmoid(scalarParam(Math.log(0.01), 0))})}),
+                y: from.y + sample(Gaussian({mu:0, sigma:0.1}), {guide: Gaussian({mu:scalarParam(0, 0.1), sigma:ad.scalar.sigmoid(scalarParam(Math.log(0.01), 0))})})},
+              sd: {x: 0.01, y:0.01}}
+    }
+    var helper = function(pointsSoFar) {
+      if(pointsSoFar.length == pointsPerPrimitive) {
+        return pointsSoFar
+      } else {
+        var newPoint = nextPoint(pointsSoFar[pointsSoFar.length-1].mu);
+        return helper(pointsSoFar.concat(newPoint));
+      }
+    }
+    return helper([nextPoint({x:0, y:0})]);
+  }
+  return map(samplePrimitive, _.range(nPrimitives))
+}
+
+// -----------------------
+
+var sampleCharacter = function(params, obs, savePrefix) {
+
+  var sampleRelationDetails = function(type, prevStrokes, render) {
+    if (type == 'independent') {
+
+
+      var diff = ad.tensor.sub(obs.t, render.t)
+      var shrunk = eval_seq(shrinkNet, diff)
+
+
+
+      var glimpse_params = eval_seq(glimpseNet, shrunk)
+
+            var aa = eval_seq(locNet, Matrix(
+        [[0,0,0,0,0,0,0,0],
+         [0,0,0,0,0,0,0,0],
+         [0,0,0,0,0,0,0,0],
+         [0,0,0,0,0,0,0,0],
+         [0,0,0,0,0,0,0,0],
+         [0,0,0,0,0,0,0,0],
+         [0,0,0,0,0,0,0,0],
+         [0,0,0,0,0,0,0,0]]
+        ))
+        var xx = ad.tensor.get(aa, 0)
+      sample(Gaussian({mu:1, sigma:0.1}), {guide: Delta({v: xx})})
+      
+      var glimpse_transformation = {
+        ax: ad.tensor.get(glimpse_params, 0)* 0.3 + 2,
+        bx: ad.tensor.get(glimpse_params, 1)* 0.3 - 0.5,
+        ay: ad.tensor.get(glimpse_params, 2)* 0.3 + 2,
+        by: ad.tensor.get(glimpse_params, 3)* 0.3 - 0.5
+      }
+
+
+      var glimpse = c.spatialTransformer(blurred({t:diff}), 8, 8, glimpse_transformation)
+      // if(savePrefix) {
+      //   c.saveImage({t:shrunk}, savePrefix + "_" + prevStrokes.length + "previewa.bmp", [1,0,0]);
+      //   c.saveImage(glimpseNet, savePrefix + "_" + prevStrokes.length + "previewloc.bmp", [1,0,1]);
+      // }
+     
+
+
+
+      // var loc = eval_seq(locNet, glimpse.t)
+      // var mu_x = (ad.scalar.sigmoid(ad.tensor.get(loc, 0)) - glimpse_transformation.bx) / glimpse_transformation.ax
+      // var mu_y = (ad.scalar.sigmoid(ad.tensor.get(loc, 1)) - glimpse_transformation.by) / glimpse_transformation.ay
+      var mu_x=0.5
+      var mu_y=0.5
+
+      // var sd_x = (ad.scalar.exp(ad.tensor.get(locNet, 2) - 5)) / glimpse_transformation.ax // initial bias correction. TODO: move to initialisation
+      // var sd_y = (ad.scalar.exp(ad.tensor.get(locNet, 3) - 5)) / glimpse_transformation.ay
+      
+      // var x = sample(Gaussian({mu: 0.5, sigma:0.2}), {guide:Gaussian({mu: mu_x, sigma:sd_x})})
+      // var y = sample(Gaussian({mu: 0.5, sigma:0.2}), {guide:Gaussian({mu: mu_y, sigma:sd_y})})
+      
+      var x = sample(Uniform({a: 0, b:1}), {guide:Delta({v:mu_x})})
+      var y = sample(Uniform({a: 0, b:1}), {guide:Delta({v:mu_y})})
+
+      var preview = c.spatialTransformer({t:diff}, 8, 8, {ax: params.previewZoom, ay:params.previewZoom, bx:0.5 - params.previewZoom * x, by:0.5 - params.previewZoom * y})
+      // if(savePrefix) c.saveImage(preview, savePrefix + "_iteration" + c.counter() + "_" + prevStrokes.length + "previewtype.bmp", [0,1,0]);
+
+      return {x:x, y:y, preview:preview}
+    }
+  }
+  
+  var sampleControlPoints = function(primitive) {
+  return pam(primitive,
+    function(p) {
+      return {x: p.mu.x,
+              y: p.mu.y}
+    });
+  };
+
+  // var sampleStroke = function(relationDetails) {
+  //   var p = ad.tensor.softmax(eval_seq(primitiveNet, relationDetails.preview.t))
+  //   var prim = ad.tensor.reshape(p, [nPrimitives, 1])
+  //   var id = sample(RandomInteger({n: nPrimitives}), {guide:Discrete({ps: prim})});
+  //   // var id = 0
+
+  //   var stroke = {primId: id,
+  //                  controlPoints: sampleControlPoints(params.primitives[id]),
+  //                  scale: 1}
+  //   return stroke;
+  // }
+
+  var enumerateStrokes = function(relationDetails) {
+    var p = ad.tensor.softmax(eval_seq(primitiveNet, relationDetails.preview.t))
+    var prim = ad.tensor.reshape(p, [nPrimitives, 1])
+    // if(savePrefix) {
+    //   console.log(ad.value(prim).toArray())
+    // }
+    var strokes = map(function(id) {
+      return {alpha: ad.tensor.get(prim, id),
+       primId: id,
+       controlPoints: sampleControlPoints(params.primitives[id]),
+       scale: 1}
+    }, _.range(nPrimitives))
+
+    return strokes;
+  }
+
+  var helper = function(render, strokesSoFar) {
+
+    if(strokesSoFar.length == 1) {
+      return render
+    } else {
+      
+      var relationType = 'independent'
+      var relationDetails = sampleRelationDetails(relationType, strokesSoFar, render);
+      var relation = _.extend({type: relationType}, relationDetails);
+
+
+
+      var strokes = enumerateStrokes(relationDetails);
+      var newRender = reduce(function(stroke, r) {
+        return c.drawStroke(r, {x:relation.x, y:relation.y}, stroke.controlPoints, linewidth, stroke.alpha)
+      }, render, strokes)
+
+      if(savePrefix) c.saveOverlay(newRender, obs, savePrefix + "_iteration" + c.counter() + "_" + strokesSoFar.length + "render.bmp", [0, 1, 1], [1, 0, 0]);
+      // if(savePrefix) c.saveOverlay(blurred(newRender), blurred(obs), savePrefix + "_iteration" + c.counter() + "_" + strokesSoFar.length + "blurred.bmp", [0, 1, 1], [1, 0, 0]);
+      
+
+      //factor(getScore(newRender, obs) - getScore(render, obs))
+
+      return helper(newRender, strokesSoFar.concat({strokes: strokes,
+                                                    relation: relation}))
+    }
+  }
+  var render = helper(empty, []);
+  return render
+}
+
+
+// ----------------------------------------------
+
+// var n = 100
+// var logn = 15
+var logEvery = 10;
+// var observations = map(function(i) {return c.randomOmniglot()}, _.range(n))
+
+var observations = map(function(i) {return c.randomOmniglot()}, _.range(20))
+console.log()
+var model = function() {
+  var params = {primitives: samplePrimitives(), previewZoom:4/*previewZoom:ad.scalar.exp(scalarParam(Math.log(4), 0))*/};
+  var counter = c.counter(true)  
+  // console.log(ad.value(primitiveNet[0].biases).toArray())
+  console.log("primitiveNet Biases:",   sum(ad.value(primitiveNet[0].biases).toArray()))
+  console.log("primitiveNet Weights:",  sum(map(sum, ad.value(primitiveNet[0].weights).toArray())))
+  console.log("locNet Biases:",         sum(ad.value(locNet[0].biases).toArray()))
+  console.log("locNet Weights:",        sum(map(sum, ad.value(locNet[0].weights).toArray())))
+  console.log("glimpseNet Biases:",     sum(ad.value(glimpseNet[0].biases).toArray()))
+  console.log("glimpseNet Weights:",    sum(map(sum, ad.value(glimpseNet[0].weights).toArray())))
+  console.log()
+
+  mapData({data: observations}, function(o) {
+    
+    // var savePrefix = counter%n < logn ?
+    var savePrefix = counter%logEvery == 0 ?
+      // saveDir + "/" + o.name + "_iteration" + c.counter() :
+      saveDir + "/" + "Iteration " + c.counter() + " - " + o.name :
+      undefined
+
+    var render = sampleCharacter(params, o.obs, savePrefix);
+    // if(savePrefix) c.saveImage(o.obs, savePrefix + ".bmp", [1,0,0]);
+
+        // return {name:o.name, obs:obs, render:render};
+  }, {batchSize: 10})
+}
+
+var params = Optimize(model, {steps:100000,
+                              estimator:{ELBO:{samples: 1}},
+                              optMethod: {adam:{stepSize: 0.005}}});
+
+'done';

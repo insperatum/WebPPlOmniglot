@@ -1,0 +1,60 @@
+var c = adcanvas.init(ad, ad.tensor.__Tensor, nn)
+
+var kernel = c.powKernel(5, -18);
+var gaussianBlur = function(x) {
+  return c.convolve(x, kernel)
+}
+var linewidth = 2
+
+
+
+var empty = c.fill(30, 30, 0)
+// var obs = c.drawLine(empty, 1, 2, 7, 7, linewidth);
+var obs = c.drawSpline(empty, [[0,4],[10,18],[18,10],[25,25]], linewidth);
+c.saveImage(obs, "output/_obs.bmp", [255,0,0])
+var obsBlurred = gaussianBlur(obs)
+c.saveImage(obsBlurred, "output/_obsblurred.bmp", [255,0,0])
+
+var sqdiff = function(x, y) {
+  var diff = ad.tensor.sub(x.t, y.t)
+  return ad.tensor.sumreduce(ad.tensor.mul(diff, diff))
+}
+
+var model = function() {
+  // var makeGuide = function(muinit) {return Gaussian({mu:scalarParam(muinit, 0), sigma:ad.scalar.exp(scalarParam())})}
+  var makeGuide = function(muinit) {return Gaussian({mu:scalarParam(15, 5), sigma:ad.scalar.exp(scalarParam(Math.log(10), 0))})}
+  var x1 = sample(Gaussian({mu:15,sigma:10}), {guide: makeGuide()})
+  var y1 = sample(Gaussian({mu:15,sigma:10}), {guide: makeGuide()})
+  var x2 = sample(Gaussian({mu:15,sigma:10}), {guide: makeGuide()})
+  var y2 = sample(Gaussian({mu:15,sigma:10}), {guide: makeGuide()})
+  var x3 = sample(Gaussian({mu:15,sigma:10}), {guide: makeGuide()})
+  var y3 = sample(Gaussian({mu:15,sigma:10}), {guide: makeGuide()})
+  var x4 = sample(Gaussian({mu:15,sigma:10}), {guide: makeGuide()})
+  var y4 = sample(Gaussian({mu:15,sigma:10}), {guide: makeGuide()})
+  
+  var render = c.drawSpline(empty, [[x1, y1], [x2, y2], [x3, y3], [x4, y4]], linewidth)
+  var renderBlurred = gaussianBlur(render)
+  
+  var cost = ad.scalar.add(
+                ad.scalar.mul(sqdiff(render, obs), 10),
+                ad.scalar.mul(sqdiff(renderBlurred, obsBlurred), 10))
+  
+  factor(-cost)
+  
+  var counter = c.counter()
+  if(counter%50 === 0) {
+    console.log("Length: ", ad.value(render.lineLength))
+    console.log("Overlap: ", ad.value(render.overlap))
+    c.saveImage(render, "output/inferred_" + counter + ".bmp")
+    c.saveImage(renderBlurred, "output/inferred_" + counter + "blurry.bmp")
+    // console.log(ad.value(params[0]), ad.value(params[1]), ad.value(params[2]), ad.value(params[3]), ad.value(params[4]), ad.value(params[5]), ad.value(params[6]), ad.value(params[7]))
+  }
+  return render
+}
+
+
+Optimize(model, {steps:500, samples:1, optMethod: {adam:{stepSize: 0.1, decayRate1: 0.9, decayRate2: 0.99}}})
+// Infer({method:'optimize', steps:10000}, model)
+// c.saveImage(inferred, "output/inferred.bmp")
+
+'done'

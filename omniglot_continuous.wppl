@@ -1,0 +1,304 @@
+var saveDir = "omniglot_out"
+
+
+var linewidth = 1.3
+// var linewidth = 2.6
+var width = 32
+
+var nPrimitives = 10;
+// var pointsPerPrimitive = 3;
+var pointsPerPrimitive = 2;
+
+var c = adcanvas.init(ad, ad.tensor.__Tensor, nn)
+var empty = c.fill(width, width, 0)
+var kernel = c.powKernel(5, -18); //First arg must be odd
+var blurred = function(x) {
+  return c.convolve(x, kernel)
+}
+var pam = function(a, f) {
+  return map(f, a);
+}
+var sqdiff = function(x, y) {
+  var diff = ad.tensor.sub(x.t, y.t)
+  return ad.tensor.sumreduce(ad.tensor.mul(diff, diff))
+}
+var getScore = function(render, obs) {
+  // return ad.scalar.add(
+  //   ad.scalar.mul(sqdiff(render, obs), -10),
+  //   ad.scalar.mul(sqdiff(blurred(render), blurred(obs)), -10))
+  return ad.scalar.mul(sqdiff(blurred(render), blurred(obs)), -10)//)
+}
+
+var eval_seq = function(seq, input, i) {
+  if(i >= seq.length) {
+    return input
+  } else if(i==undefined) {
+    return eval_seq(seq, daipp.nneval(seq[0], input), 1)
+  } else {
+    return eval_seq(seq, daipp.nneval(seq[i], input), i+1)
+  }
+}
+
+
+
+
+
+//----------------------
+
+  var shrinkNet = [
+    nn.maxpool({filterSize: width/8})
+  ]
+  shrinkNet[0].setTraining(true)
+
+  var contNet = [
+    nn.linear(8*8, 1, "contNet")
+  ]
+  contNet[0].setTraining(true)
+
+  var locNet = [
+    // nn.convolution({inDepth: 1, outDepth: 3, filterSize: 3}, 'loc1.1'),
+    // nn.maxpool({filterSize: 2}),
+    // nn.sigmoid,
+    // nn.linear(3*4*4, 4, "loc1.2"),
+    // nn.sigmoid,
+    // nn.linear(4, 2, "loc1.3")
+    nn.linear(8*8, 6, "loc1.1"),
+    nn.sigmoid,
+    nn.linear(6, 2, "loc1.2")
+  ]
+  locNet[0].setTraining(true)
+  locNet[2].setTraining(true)
+
+  var primitiveNet = [
+    nn.linear(8*8, nPrimitives, "primitiveNet")
+  ]
+  primitiveNet[0].setTraining(true)
+
+  // var scaleNet = [
+  //   nn.linear(8*8, 1, "scaleNet")
+  // ]
+  // scaleNet[0].setTraining(true)
+
+  var glimpseNets = map(function(i) {
+    var n = [
+      nn.convolution({inDepth: 1, outDepth: 4, filterSize: 3}, 'glimpse' + n + '.1'),
+      nn.maxpool({filterSize: 2}),
+      nn.sigmoid,  
+      nn.convolution({inDepth: 4, outDepth: 6, filterSize: 3}, 'glimpse' + n + '.2'),
+      nn.maxpool({filterSize: 2}),
+      nn.sigmoid,
+      nn.linear(6*2*2, 4, 'glimpse' + n + '.3'),
+      nn.sigmoid,
+      nn.linear(4, 4, 'glimpse' + n + '.4')
+    ]
+    n[0].setTraining(true)
+    n[3].setTraining(true)
+    n[6].setTraining(true)
+    n[8].setTraining(true)
+    return n
+  }, [1, 2, 3])
+  var glimpse1Net = glimpseNets[0]
+  var glimpse2Net = glimpseNets[1]
+  var glimpse3Net = glimpseNets[2]
+ 
+//----------------------
+
+var samplePrimitives = function() {
+  var samplePrimitive = function() {
+    var nextPoint = function(from) {
+      return {mu: {
+                x: from.x + sample(Gaussian({mu:0, sigma:0.1}), {guide: Gaussian({mu:scalarParam(0, 0.1), sigma:ad.scalar.sigmoid(scalarParam(Math.log(0.01), 0))})}),
+                y: from.y + sample(Gaussian({mu:0, sigma:0.1}), {guide: Gaussian({mu:scalarParam(0, 0.1), sigma:ad.scalar.sigmoid(scalarParam(Math.log(0.01), 0))})})},
+              sd: {x: 0.01, y:0.01}}
+    }
+    var helper = function(pointsSoFar) {
+      if(pointsSoFar.length == pointsPerPrimitive) {
+        return pointsSoFar
+      } else {
+        var newPoint = nextPoint(pointsSoFar[pointsSoFar.length-1].mu);
+        return helper(pointsSoFar.concat(newPoint));
+      }
+    }
+    return helper([nextPoint({x:0, y:0})]);
+  }
+  return map(samplePrimitive, _.range(nPrimitives))
+}
+
+// -----------------------
+
+var sampleCharacter = function(params, obs, savePrefix) {
+
+  var sampleRelationDetails = function(type, prevStrokes, render) {
+    if (type == 'independent') {
+      var diff = ad.tensor.sub(blurred(obs).t, blurred(render).t)
+      var shrunk = eval_seq(shrinkNet, diff)
+      var glimpse1_params = eval_seq(glimpse1Net, shrunk)
+      var glimpse1_transformation = {
+        ax: ad.tensor.get(glimpse1_params, 0)* 0.3 + 2,
+        bx: ad.tensor.get(glimpse1_params, 1)* 0.3 - 0.5,
+        ay: ad.tensor.get(glimpse1_params, 2)* 0.3 + 2,
+        by: ad.tensor.get(glimpse1_params, 3)* 0.3 - 0.5
+      }
+      var glimpse1 = c.spatialTransformer(blurred({t:diff}), 8, 8, glimpse1_transformation)
+
+      var glimpse2_params = eval_seq(glimpse2Net, shrunk)
+      var glimpse2_transformation = {
+        ax: (ad.tensor.get(glimpse2_params, 0)* 0.3 + 2)*glimpse1_transformation.ax,
+        bx: (ad.tensor.get(glimpse2_params, 0)* 0.3 + 2)*glimpse1_transformation.bx + ad.tensor.get(glimpse2_params, 1)* 0.3 - 0.5,
+        ay: (ad.tensor.get(glimpse2_params, 2)* 0.3 + 2)*glimpse1_transformation.ay,
+        by: (ad.tensor.get(glimpse2_params, 2)* 0.3 + 2)*glimpse1_transformation.by + ad.tensor.get(glimpse2_params, 3)* 0.3 - 0.5
+      }
+      var glimpse2 = c.spatialTransformer(blurred({t:diff}), 8, 8, glimpse2_transformation)
+
+      var glimpse3_params = eval_seq(glimpse3Net, shrunk)
+      var glimpse3_transformation = {
+        ax: (ad.tensor.get(glimpse3_params, 0)* 0.3 + 2)*glimpse2_transformation.ax,
+        bx: (ad.tensor.get(glimpse3_params, 0)* 0.3 + 2)*glimpse2_transformation.bx + ad.tensor.get(glimpse3_params, 1)* 0.3 - 0.5,
+        ay: (ad.tensor.get(glimpse3_params, 2)* 0.3 + 2)*glimpse2_transformation.ay,
+        by: (ad.tensor.get(glimpse3_params, 2)* 0.3 + 2)*glimpse2_transformation.by + ad.tensor.get(glimpse3_params, 3)* 0.3 - 0.5
+      }
+      var glimpse3 = c.spatialTransformer(blurred({t:diff}), 8, 8, glimpse3_transformation)
+      // console.log("Glimpse3:", ad.value(glimpse3.t))
+
+
+      if(savePrefix) {
+        c.saveImage({t:shrunk}, savePrefix + "_" + prevStrokes.length + "previewa.bmp", [1,0,0]);
+        c.saveImage(glimpse1, savePrefix + "_" + prevStrokes.length + "previewglimpse1.bmp", [1,0,0]);
+        c.saveImage(glimpse2, savePrefix + "_" + prevStrokes.length + "previewglimpse2.bmp", [1,0,0]);
+        c.saveImage(glimpse3, savePrefix + "_" + prevStrokes.length + "previewglimpse3.bmp", [1,0,0]);
+      }
+     
+
+      var loc = eval_seq(locNet, glimpse3.t)
+      var mu_x = (ad.scalar.sigmoid(ad.tensor.get(loc, 0)) - glimpse3_transformation.bx) / glimpse3_transformation.ax
+      var mu_y = (ad.scalar.sigmoid(ad.tensor.get(loc, 1)) - glimpse3_transformation.by) / glimpse3_transformation.ay
+      // var sd_x = (ad.scalar.exp(ad.tensor.get(locNet, 2) - 5)) / glimpse_transformation.ax // initial bias correction. TODO: move to initialisation
+      // var sd_y = (ad.scalar.exp(ad.tensor.get(locNet, 3) - 5)) / glimpse_transformation.ay
+      
+      // var x = sample(Gaussian({mu: 0.5, sigma:0.2}), {guide:Gaussian({mu: mu_x, sigma:sd_x})})
+      // var y = sample(Gaussian({mu: 0.5, sigma:0.2}), {guide:Gaussian({mu: mu_y, sigma:sd_y})})
+      
+      var x = sample(Gaussian({mu:0.5, sigma:2}), {guide:Delta({v:mu_x})})
+      var y = sample(Gaussian({mu:0.5, sigma:2}), {guide:Delta({v:mu_y})})
+      // var x = sample(Uniform({a:0, b:1}), {guide:Delta({v:mu_x})})
+      // var y = sample(Uniform({a:0, b:1}), {guide:Delta({v:mu_y})})
+
+      // console.log("Starting at: ", ad.value(x), ", ", ad.value(y))
+      var preview = c.spatialTransformer({t:diff}, 8, 8, {ax: params.previewZoom, ay:params.previewZoom, bx:0.5 - params.previewZoom * x, by:0.5 - params.previewZoom * y})
+      if(savePrefix) c.saveImage(preview, savePrefix + "_" + prevStrokes.length + "previewtype.bmp", [0,1,0]);
+
+      return {x:x, y:y, preview:preview}
+    }
+  }
+  
+  var sampleControlPoints = function(primitive) {
+  return pam(primitive,
+    function(p) {
+      return {x: p.mu.x,
+              y: p.mu.y}
+    });
+  };
+
+  // var sampleStroke = function(relationDetails) {
+  //   var p = ad.tensor.softmax(eval_seq(primitiveNet, relationDetails.preview.t))
+  //   var prim = ad.tensor.reshape(p, [nPrimitives, 1])
+  //   var id = sample(RandomInteger({n: nPrimitives}), {guide:Discrete({ps: prim})});
+  //   // var id = 0
+
+  //   var stroke = {primId: id,
+  //                  controlPoints: sampleControlPoints(params.primitives[id]),
+  //                  scale: 1}
+  //   return stroke;
+  // }
+
+  var enumerateStrokes = function(relationDetails) {
+    var p = ad.tensor.softmax(eval_seq(primitiveNet, relationDetails.preview.t))
+
+    // var s = ad.tensor.sigmoid(eval_seq(scaleNet, relationDetails.preview.t))
+    var prim = ad.tensor.reshape(p, [nPrimitives, 1])
+
+    map(function(prob) {
+      factor(5 * prob * ad.scalar.log(prob)) // 5 is just an arbitrary scaling factor. 
+    }, ad.tensor.toScalars(prim))
+
+    var strokes = map(function(id) {
+      return {alpha: ad.tensor.get(prim, id),
+       primId: id,
+       controlPoints: sampleControlPoints(params.primitives[id])
+     }
+       // map(function(c) {
+       //  return {x: c.x * s, y:c.y * s}
+       // }, sampleControlPoints(params.primitives[id]))}
+    }, _.range(nPrimitives))
+
+    return strokes;
+  }
+
+  var helper = function(render, strokesSoFar) {  
+    if(strokesSoFar.length == 2) {
+      return render
+    } else {
+      
+      var relationType = 'independent'
+      var relationDetails = sampleRelationDetails(relationType, strokesSoFar, render);
+      var relation = _.extend({type: relationType}, relationDetails);
+
+
+
+      var strokes = enumerateStrokes(relationDetails);
+      var newRender = reduce(function(stroke, r) {
+        return c.drawStroke(r, {x:relation.x, y:relation.y}, stroke.controlPoints, linewidth, stroke.alpha)
+        // return c.drawLine(r, {x:32*relation.x, y:32*relation.y},
+          // {x:32*(relation.x + stroke.controlPoints[1].x), y:32*(relation.y + stroke.controlPoints[1].y)}, linewidth, stroke.alpha)
+      }, render, strokes)
+
+      if(savePrefix) c.saveOverlay(newRender, obs, savePrefix + "_" + strokesSoFar.length + "render.bmp", [0, 1, 1], [1, 0, 0]);
+      // if(savePrefix) c.saveOverlay(blurred(newRender), blurred(obs), savePrefix + "_iteration" + c.counter() + "_" + strokesSoFar.length + "blurred.bmp", [0, 1, 1], [1, 0, 0]);
+      var improvement = getScore(newRender, obs) - getScore(render, obs)
+      // console.log("Improvement: " + ad.value(improvement))
+      factor(improvement)
+
+      return helper(newRender, strokesSoFar.concat({strokes: strokes,
+                                                    relation: relation}))
+    }
+  }
+  var render = helper(empty, []);
+  return render
+}
+
+
+// ----------------------------------------------
+
+// var n = 100
+// var logn = 15
+var logEvery = 10;
+// var observations = map(function(i) {return c.randomOmniglot()}, _.range(n))
+
+var model = function() {
+  var params = {primitives: samplePrimitives(), previewZoom:ad.scalar.exp(scalarParam(Math.log(4), 0))};
+  var observations = map(function(i) {return c.fakeOmniglot()}, _.range(10))
+  // var observations = map(function(i) {return c.randomOmniglot()}, _.range(5))
+  mapData({data: observations}, function(o) {
+    var counter = c.counter(true)  
+    console.log(counter)
+    // var savePrefix = counter%n < logn ?
+    var savePrefix = counter%logEvery == 0 ?
+      // saveDir + "/" + o.name + "_iteration" + c.counter() :
+      saveDir + "/" + "i=" + c.counter() + " -- " + o.name :
+      undefined
+
+    if(savePrefix) c.saveImage(o.obs, savePrefix + "_.bmp", [1,0,0]);
+
+
+    var render = sampleCharacter(params, o.obs, savePrefix);
+    
+
+        // return {name:o.name, obs:obs, render:render};
+  }, {batchSize: 10})
+}
+
+var params = Optimize(model, {steps:100000,
+                              estimator:{ELBO:{samples: 1}},
+                              optMethod: {adam:{stepSize: 0.01}}});
+
+'done';

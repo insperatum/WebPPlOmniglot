@@ -1,0 +1,35 @@
+var fooNet = nn.linear(1, 1, "fooNet")
+fooNet.setTraining(true)
+// fooNet.name = "fooNet"
+var barNet = nn.linear(1, 1, "barNet")
+barNet.setTraining(true)
+// batNet.name = "barNet"
+
+var model = function() {
+  var foo = daipp.nneval(fooNet, Matrix([[0]]))
+  var bar = daipp.nneval(barNet, Matrix([[0]]))
+
+  var x = ad.tensor.get(bar, 0)
+  sample(Gaussian({mu:1, sigma:0.1}), {guide: Delta({v: x})})
+
+  return
+}
+
+var model2 = function() {
+  // var foo = daipp.nneval(fooNet, Matrix([[0]]))
+  var bar = daipp.nneval(barNet, Matrix([[0]]))
+
+  var x = ad.tensor.get(bar, 0)
+  sample(Gaussian({mu:1, sigma:0.1}), {guide: Delta({v: x})})
+
+  return
+}
+
+var params = Optimize(model, {steps:1000,
+                              estimator:{ELBO:{samples: 1}},
+                              optMethod: {adam:{stepSize: 0.005}}});
+
+var bar = daipp.nneval(barNet, Matrix([[0]]))
+var x = ad.tensor.get(bar, 0)
+console.log("Final value:", ad.value(x))
+'done';
